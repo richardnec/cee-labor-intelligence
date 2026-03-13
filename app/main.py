@@ -348,7 +348,7 @@ st.divider()
 
 # ── LABOR COST INDEX ────────────────────────────────────
 st.subheader("💰 Labor Cost Index")
-st.markdown("**Labor Cost Index (LCI)** = measures changes in hourly labor costs (wages + non-wage costs). Base year = 100. Values above 100 indicate costs have risen since the base period.")
+st.markdown("**Labor Cost Index (LCI)** = tracks how much it costs employers to hire one hour of work (wages + social contributions + benefits). Base year = 100. A value of 120 means labor costs are 20% higher than in the base year. Rapidly rising LCI signals increasing pressure on business costs.")
 st.caption(last_updated_str(last_dates, 'wages'))
 
 col_w1, col_w2, col_w3, col_w4, _ = st.columns([1,1,1,1,8])
