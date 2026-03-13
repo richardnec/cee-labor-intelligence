@@ -309,7 +309,7 @@ st.divider()
 
 # ── JOB VACANCY RATE ────────────────────────────────────
 st.subheader("💼 Job Vacancy Rate")
-st.markdown("**Job Vacancy Rate** = percentage of total jobs (filled + unfilled) that are vacant. Higher = more open positions, tighter labor market.")
+st.markdown("**Job Vacancy Rate (%)** = share of unfilled job positions out of all positions (filled + unfilled). Example: 2% means 2 out of every 100 jobs are vacant. A rising rate signals strong employer demand and a tightening labor market.")
 st.caption(last_updated_str(last_dates, 'job_vacancies'))
 
 col_j1, col_j2, col_j3, col_j4, _ = st.columns([1,1,1,1,8])
