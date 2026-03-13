@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-
-load_dotenv()
+import json
+from google.oauth2 import service_account
 
 CEE_COUNTRIES = ['SK', 'CZ', 'PL', 'HU', 'DE', 'AT', 'EE', 'EL']
 COUNTRY_NAMES = {
@@ -25,9 +25,23 @@ st.set_page_config(
     layout="wide"
 )
 
+def get_bq_client():
+    if "gcp_service_account" in st.secrets:
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        return bigquery.Client(
+            credentials=credentials,
+            project=st.secrets["gcp_service_account"]["project_id"]
+        )
+    else:
+        load_dotenv()
+        return bigquery.Client()
+
 @st.cache_data(ttl=3600)
 def load_unemployment():
-    client = bigquery.Client()
+    client = get_bq_client()
     query = f"""
     SELECT country, date, unemployment_rate
     FROM `{client.project}.labor_market.unemployment`
@@ -40,7 +54,7 @@ def load_unemployment():
 
 @st.cache_data(ttl=3600)
 def load_forecasts():
-    client = bigquery.Client()
+    client = get_bq_client()
     query = f"""
     SELECT country, date, yhat, yhat_lower, yhat_upper
     FROM `{client.project}.labor_market.forecasts`
@@ -52,7 +66,7 @@ def load_forecasts():
 
 @st.cache_data(ttl=3600)
 def load_master():
-    client = bigquery.Client()
+    client = get_bq_client()
     query = f"""
     SELECT country, date, unemployment_rate, youth_unemployment_rate,
            job_vacancy_rate, labor_cost_index
@@ -69,7 +83,7 @@ def load_master():
 
 @st.cache_data(ttl=3600)
 def load_scorecard():
-    client = bigquery.Client()
+    client = get_bq_client()
     query = f"""
     WITH latest AS (
         SELECT country, unemployment_rate,
@@ -95,7 +109,7 @@ def load_scorecard():
 
 @st.cache_data(ttl=3600)
 def load_last_updated():
-    client = bigquery.Client()
+    client = get_bq_client()
     query = f"""
     SELECT 'unemployment' as source, MAX(date) as last_date FROM `{client.project}.labor_market.unemployment`
     UNION ALL
@@ -116,7 +130,7 @@ def last_updated_str(last_dates, key):
 st.title("🌍 CEE Labor Market Intelligence")
 
 st.markdown("""
-Real-time labor market analytics for **Central & Eastern Europe** — tracking unemployment, 
+Real-time labor market analytics for **Central & Eastern Europe** — tracking unemployment,
 youth employment, job vacancies, and labor costs across 8 countries.
 
 ---
@@ -132,7 +146,7 @@ youth employment, job vacancies, and labor costs across 8 countries.
 
 **Update frequency:**
 - Unemployment & Youth Unemployment → updated **monthly**, typically with a **4–6 week lag**
-- Job Vacancy Rate → updated **quarterly**, typically with a **2–3 month lag**  
+- Job Vacancy Rate → updated **quarterly**, typically with a **2–3 month lag**
 - Labor Cost Index → updated **quarterly**, typically with a **3–4 month lag**
 
 This dashboard automatically pulls the latest available data from Eurostat on a **daily basis**.
