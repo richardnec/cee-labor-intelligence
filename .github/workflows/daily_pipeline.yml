@@ -1,0 +1,36 @@
+name: Daily Data Pipeline
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Every day at 6:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install eurostat pandas google-cloud-bigquery prophet python-dotenv db-dtypes pyarrow
+
+      - name: Authenticate to GCP
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' > /tmp/gcp-key.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json" >> $GITHUB_ENV
+
+      - name: Run ingest
+        run: python pipeline/ingest.py
+
+      - name: Run transform
+        run: python pipeline/transform.py
+
+      - name: Run forecast
+        run: python pipeline/forecast.py
