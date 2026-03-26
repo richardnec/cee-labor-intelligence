@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install eurostat pandas google-cloud-bigquery prophet python-dotenv db-dtypes pyarrow
+        run: pip install eurostat pandas google-cloud-bigquery prophet python-dotenv db-dtypes pyarrow requests
 
       - name: Authenticate to GCP
         run: |
