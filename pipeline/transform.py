@@ -25,12 +25,8 @@ def transform_unemployment(client):
         DATE(date) as date,
         AVG(value) AS unemployment_rate
     FROM `{project}.labor_market.raw_unemployment`
-    WHERE
-        unit = 'PC_ACT'
-        AND sex = 'T'
-        AND age = 'TOTAL'
-        AND value IS NOT NULL
-        AND DATE(date) >= '2000-01-01'
+    WHERE unit = 'PC_ACT' AND sex = 'T' AND age = 'TOTAL'
+        AND value IS NOT NULL AND DATE(date) >= '2000-01-01'
     GROUP BY country, DATE(date)
     ORDER BY country, date
     """
@@ -47,44 +43,58 @@ def transform_youth_unemployment(client):
         DATE(date) as date,
         AVG(youth_unemployment_rate) as youth_unemployment_rate
     FROM `{project}.labor_market.raw_youth_unemployment`
-    WHERE
-        youth_unemployment_rate IS NOT NULL
+    WHERE youth_unemployment_rate IS NOT NULL
     GROUP BY country, DATE(date)
     ORDER BY country, date
     """
     run_query(client, query)
 
 
-def transform_job_vacancies(client):
-    print("🔄 Transformujem job vacancies...")
+def transform_inflation(client):
+    print("🔄 Transformujem infláciu...")
     project = client.project
     query = f"""
-    CREATE OR REPLACE TABLE `{project}.labor_market.job_vacancies` AS
+    CREATE OR REPLACE TABLE `{project}.labor_market.inflation` AS
     SELECT
         country,
         DATE(date) as date,
-        AVG(job_vacancy_rate) as job_vacancy_rate
-    FROM `{project}.labor_market.raw_job_vacancies`
-    WHERE
-        job_vacancy_rate IS NOT NULL
+        AVG(inflation_rate) as inflation_rate
+    FROM `{project}.labor_market.raw_inflation`
+    WHERE inflation_rate IS NOT NULL
     GROUP BY country, DATE(date)
     ORDER BY country, date
     """
     run_query(client, query)
 
 
-def transform_wages(client):
-    print("🔄 Transformujem mzdy...")
+def transform_gdp_growth(client):
+    print("🔄 Transformujem GDP growth...")
     project = client.project
     query = f"""
-    CREATE OR REPLACE TABLE `{project}.labor_market.wages` AS
+    CREATE OR REPLACE TABLE `{project}.labor_market.gdp_growth` AS
     SELECT
         country,
         DATE(date) as date,
-        AVG(labor_cost_index) as labor_cost_index
-    FROM `{project}.labor_market.raw_wages`
-    WHERE
-        labor_cost_index IS NOT NULL
+        AVG(gdp_growth) as gdp_growth
+    FROM `{project}.labor_market.raw_gdp_growth`
+    WHERE gdp_growth IS NOT NULL
+    GROUP BY country, DATE(date)
+    ORDER BY country, date
+    """
+    run_query(client, query)
+
+
+def transform_net_wages_pps(client):
+    print("🔄 Transformujem čisté mzdy (PPS)...")
+    project = client.project
+    query = f"""
+    CREATE OR REPLACE TABLE `{project}.labor_market.net_wages_pps` AS
+    SELECT
+        country,
+        DATE(date) as date,
+        AVG(net_wage_pps) as net_wage_pps
+    FROM `{project}.labor_market.raw_net_wages_pps`
+    WHERE net_wage_pps IS NOT NULL
     GROUP BY country, DATE(date)
     ORDER BY country, date
     """
@@ -101,17 +111,20 @@ def create_master_table(client):
         u.date,
         u.unemployment_rate,
         AVG(y.youth_unemployment_rate) as youth_unemployment_rate,
-        j.job_vacancy_rate,
-        AVG(w.labor_cost_index) as labor_cost_index
+        i.inflation_rate,
+        g.gdp_growth,
+        w.net_wage_pps
     FROM `{project}.labor_market.unemployment` u
     LEFT JOIN `{project}.labor_market.youth_unemployment` y
         ON u.country = y.country AND u.date = y.date
-    LEFT JOIN `{project}.labor_market.job_vacancies` j
-        ON u.country = j.country
-        AND j.date = DATE_TRUNC(u.date, QUARTER)
-    LEFT JOIN `{project}.labor_market.wages` w
-        ON u.country = w.country AND u.date = w.date
-    GROUP BY u.country, u.date, u.unemployment_rate, j.job_vacancy_rate
+    LEFT JOIN `{project}.labor_market.inflation` i
+        ON u.country = i.country AND u.date = i.date
+    LEFT JOIN `{project}.labor_market.gdp_growth` g
+        ON u.country = g.country AND g.date = DATE_TRUNC(u.date, QUARTER)
+    LEFT JOIN `{project}.labor_market.net_wages_pps` w
+        ON u.country = w.country AND w.date = DATE_TRUNC(u.date, YEAR)
+    GROUP BY u.country, u.date, u.unemployment_rate,
+             i.inflation_rate, g.gdp_growth, w.net_wage_pps
     ORDER BY u.country, u.date
     """
     run_query(client, query)
@@ -121,7 +134,8 @@ if __name__ == "__main__":
     client = get_client()
     transform_unemployment(client)
     transform_youth_unemployment(client)
-    transform_job_vacancies(client)
-    transform_wages(client)
+    transform_inflation(client)
+    transform_gdp_growth(client)
+    transform_net_wages_pps(client)
     create_master_table(client)
     print("\n✅ Transform layer hotový!")

@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import json
 from google.oauth2 import service_account
 
 CEE_COUNTRIES = ['SK', 'CZ', 'PL', 'HU', 'DE', 'AT', 'EE', 'EL']
@@ -26,18 +25,20 @@ st.set_page_config(
 )
 
 def get_bq_client():
-    if "gcp_service_account" in st.secrets:
-        credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        return bigquery.Client(
-            credentials=credentials,
-            project=st.secrets["gcp_service_account"]["project_id"]
-        )
-    else:
-        load_dotenv()
-        return bigquery.Client()
+    try:
+        if "gcp_service_account" in st.secrets:
+            credentials = service_account.Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            return bigquery.Client(
+                credentials=credentials,
+                project=st.secrets["gcp_service_account"]["project_id"]
+            )
+    except Exception:
+        pass
+    load_dotenv()
+    return bigquery.Client()
 
 @st.cache_data(ttl=3600)
 def load_unemployment():
@@ -69,7 +70,7 @@ def load_master():
     client = get_bq_client()
     query = f"""
     SELECT country, date, unemployment_rate, youth_unemployment_rate,
-           job_vacancy_rate, labor_cost_index
+           inflation_rate, gdp_growth, net_wage_pps
     FROM `{client.project}.labor_market.master`
     ORDER BY country, date
     """
@@ -77,35 +78,10 @@ def load_master():
     df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
     df['unemployment_rate'] = df['unemployment_rate'].round(2)
     df['youth_unemployment_rate'] = df['youth_unemployment_rate'].round(2)
-    df['job_vacancy_rate'] = df['job_vacancy_rate'].round(2)
-    df['labor_cost_index'] = df['labor_cost_index'].round(2)
+    df['inflation_rate'] = df['inflation_rate'].round(2)
+    df['gdp_growth'] = df['gdp_growth'].round(2)
+    df['net_wage_pps'] = df['net_wage_pps'].round(0)
     return df.sort_values(['country', 'date'])
-
-@st.cache_data(ttl=3600)
-def load_scorecard():
-    client = get_bq_client()
-    query = f"""
-    WITH latest AS (
-        SELECT country, unemployment_rate,
-        ROW_NUMBER() OVER (PARTITION BY country ORDER BY date DESC) as rn
-        FROM `{client.project}.labor_market.unemployment`
-    ),
-    prev_year AS (
-        SELECT country, unemployment_rate as rate_prev_year,
-        ROW_NUMBER() OVER (PARTITION BY country ORDER BY date DESC) as rn
-        FROM `{client.project}.labor_market.unemployment`
-        WHERE date <= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
-    )
-    SELECT
-        l.country,
-        l.unemployment_rate as current_rate,
-        p.rate_prev_year,
-        ROUND(l.unemployment_rate - p.rate_prev_year, 2) as yoy_change
-    FROM latest l
-    LEFT JOIN prev_year p ON l.country = p.country AND p.rn = 1
-    WHERE l.rn = 1
-    """
-    return client.query(query).to_dataframe()
 
 @st.cache_data(ttl=3600)
 def load_last_updated():
@@ -115,9 +91,11 @@ def load_last_updated():
     UNION ALL
     SELECT 'youth_unemployment', MAX(date) FROM `{client.project}.labor_market.youth_unemployment`
     UNION ALL
-    SELECT 'job_vacancies', MAX(date) FROM `{client.project}.labor_market.job_vacancies`
+    SELECT 'inflation', MAX(date) FROM `{client.project}.labor_market.inflation`
     UNION ALL
-    SELECT 'wages', MAX(date) FROM `{client.project}.labor_market.wages`
+    SELECT 'gdp_growth', MAX(date) FROM `{client.project}.labor_market.gdp_growth`
+    UNION ALL
+    SELECT 'net_wages_pps', MAX(date) FROM `{client.project}.labor_market.net_wages_pps`
     """
     df = client.query(query).to_dataframe()
     return dict(zip(df['source'], pd.to_datetime(df['last_date'])))
@@ -126,28 +104,40 @@ def last_updated_str(last_dates, key):
     d = last_dates.get(key)
     return f"*Last updated: {d.strftime('%b %Y')}  |  Source: Eurostat*" if d else ""
 
+def time_buttons(key):
+    col1, col2, col3, col4, _ = st.columns([1,1,1,1,8])
+    with col1:
+        if st.button("1Y", key=f"{key}_1y"): st.session_state[key] = 1
+    with col2:
+        if st.button("3Y", key=f"{key}_3y"): st.session_state[key] = 3
+    with col3:
+        if st.button("5Y", key=f"{key}_5y"): st.session_state[key] = 5
+    with col4:
+        if st.button("All", key=f"{key}_all"): st.session_state[key] = 999
+    return st.session_state.get(key, 3)
+
 # ── HEADER ──────────────────────────────────────────────
 st.title("🌍 CEE Labor Market Intelligence")
-
 st.markdown("""
-Real-time labor market analytics for **Central & Eastern Europe** — tracking unemployment,
-youth employment, job vacancies, and labor costs across 8 countries.
+Real-time economic & labor market analytics for **Central & Eastern Europe** — tracking
+unemployment, wages, inflation, and GDP growth across 8 countries.
 
 ---
 
 **What this dashboard shows:**
 - 📈 **Unemployment Rate** — monthly data for SK, CZ, PL, HU, DE, AT, EE, GR
 - 👥 **Youth Unemployment** — rate for population under 25
-- 💼 **Job Vacancy Rate** — share of unfilled positions in the total labor market
-- 💰 **Labor Cost Index** — quarterly index tracking changes in hourly labor costs
+- 📉 **Inflation (HICP)** — monthly harmonized consumer price index (% change)
+- 📊 **GDP Growth** — quarterly real GDP growth vs previous quarter
+- 💰 **Net Wages (PPS)** — annual net wages in Purchasing Power Standards, comparable across countries
 - 🔮 **12-month Forecast** — Prophet model predictions with 95% confidence intervals
 
 **Data source:** [Eurostat](https://ec.europa.eu/eurostat) — the official statistical office of the EU.
 
 **Update frequency:**
-- Unemployment & Youth Unemployment → updated **monthly**, typically with a **4–6 week lag**
-- Job Vacancy Rate → updated **quarterly**, typically with a **2–3 month lag**
-- Labor Cost Index → updated **quarterly**, typically with a **3–4 month lag**
+- Unemployment & Youth Unemployment & Inflation → updated **monthly**, typically with a **4–6 week lag**
+- GDP Growth → updated **quarterly**, typically with a **2–3 month lag**
+- Net Wages (PPS) → updated **annually**
 
 This dashboard automatically pulls the latest available data from Eurostat on a **daily basis**.
 """)
@@ -156,16 +146,15 @@ This dashboard automatically pulls the latest available data from Eurostat on a 
 df = load_unemployment()
 df_forecast = load_forecasts()
 df_master = load_master()
-df_scorecard = load_scorecard()
 last_dates = load_last_updated()
-df_scorecard['country_name'] = df_scorecard['country'].map(COUNTRY_NAMES)
 
 # ── SIDEBAR ─────────────────────────────────────────────
 st.sidebar.header("Filters")
 countries = st.sidebar.multiselect(
     "Select Countries",
     options=sorted(df['country'].unique()),
-    default=sorted(df['country'].unique())
+    default=sorted(df['country'].unique()),
+    format_func=lambda x: COUNTRY_NAMES.get(x, x)
 )
 
 df_filtered = df[df['country'].isin(countries)].copy()
@@ -180,31 +169,21 @@ with col2:
     youth_avg = df_master_filtered.groupby('country')['youth_unemployment_rate'].last().mean()
     st.metric("Avg Youth Unemployment", f"{youth_avg:.1f}%" if pd.notna(youth_avg) else "N/A")
 with col3:
-    jvr_avg = df_master_filtered.dropna(subset=['job_vacancy_rate']).groupby('country')['job_vacancy_rate'].last().mean()
-    st.metric("Avg Job Vacancy Rate", f"{jvr_avg:.1f}%" if pd.notna(jvr_avg) else "N/A")
+    infl_avg = df_master_filtered.groupby('country')['inflation_rate'].last().mean()
+    st.metric("Avg Inflation (HICP)", f"{infl_avg:.1f}%" if pd.notna(infl_avg) else "N/A")
 with col4:
-    st.metric("Countries", len(countries))
+    gdp_avg = df_master_filtered.dropna(subset=['gdp_growth']).groupby('country')['gdp_growth'].last().mean()
+    st.metric("Avg GDP Growth", f"{gdp_avg:.1f}%" if pd.notna(gdp_avg) else "N/A")
 
 st.divider()
 
 # ── HLAVNY GRAF ─────────────────────────────────────────
 st.subheader("📈 Unemployment Rate Over Time")
 st.caption(last_updated_str(last_dates, 'unemployment'))
+main_years = time_buttons('main_years')
 
-col_btn1, col_btn2, col_btn3, col_btn4, _ = st.columns([1,1,1,1,8])
-with col_btn1:
-    if st.button("1Y", key="main_1y"): st.session_state['main_years'] = 1
-with col_btn2:
-    if st.button("3Y", key="main_3y"): st.session_state['main_years'] = 3
-with col_btn3:
-    if st.button("5Y", key="main_5y"): st.session_state['main_years'] = 5
-with col_btn4:
-    if st.button("All", key="main_all"): st.session_state['main_years'] = 999
-
-main_years = st.session_state.get('main_years', 3)
 max_date = df_filtered['date'].max()
 df_view = df_filtered if main_years == 999 else df_filtered[df_filtered['date'] >= max_date - pd.DateOffset(years=main_years)].copy()
-
 df_smooth = df_view.copy()
 df_smooth['unemployment_rate'] = df_smooth.groupby('country')['unemployment_rate'].transform(
     lambda x: x.rolling(window=3, min_periods=1).mean()
@@ -217,8 +196,7 @@ for country in sorted(df_smooth['country'].unique()):
     df_c = df_smooth[df_smooth['country'] == country]
     fig_main.add_trace(go.Scatter(
         x=df_c['date'], y=df_c['unemployment_rate'],
-        name=COUNTRY_NAMES.get(country, country), mode='lines',
-        line=dict(width=2),
+        name=COUNTRY_NAMES.get(country, country), mode='lines', line=dict(width=2),
         hovertemplate=f'<b>{COUNTRY_NAMES.get(country, country)}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}%<extra></extra>'
     ))
 fig_main.update_layout(
@@ -251,18 +229,8 @@ st.divider()
 # ── YOUTH UNEMPLOYMENT ──────────────────────────────────
 st.subheader("👥 Youth Unemployment Rate (Under 25)")
 st.caption(last_updated_str(last_dates, 'youth_unemployment'))
+youth_years = time_buttons('youth_years')
 
-col_y1, col_y2, col_y3, col_y4, _ = st.columns([1,1,1,1,8])
-with col_y1:
-    if st.button("1Y", key="youth_1y"): st.session_state['youth_years'] = 1
-with col_y2:
-    if st.button("3Y", key="youth_3y"): st.session_state['youth_years'] = 3
-with col_y3:
-    if st.button("5Y", key="youth_5y"): st.session_state['youth_years'] = 5
-with col_y4:
-    if st.button("All", key="youth_all"): st.session_state['youth_years'] = 999
-
-youth_years = st.session_state.get('youth_years', 3)
 df_youth = df_master_filtered[df_master_filtered['youth_unemployment_rate'].notna()].copy()
 max_date_y = df_youth['date'].max() if not df_youth.empty else pd.Timestamp.now()
 df_youth_view = df_youth if youth_years == 999 else df_youth[df_youth['date'] >= max_date_y - pd.DateOffset(years=youth_years)].copy()
@@ -307,86 +275,116 @@ st.plotly_chart(fig_youth_bar, use_container_width=True)
 
 st.divider()
 
-# ── JOB VACANCY RATE ────────────────────────────────────
-st.subheader("💼 Job Vacancy Rate")
-st.markdown("**Job Vacancy Rate (%)** = share of unfilled job positions out of all positions (filled + unfilled). Example: 2% means 2 out of every 100 jobs are vacant. A rising rate signals strong employer demand and a tightening labor market.")
-st.caption(last_updated_str(last_dates, 'job_vacancies'))
+# ── INFLACIA ────────────────────────────────────────────
+st.subheader("📉 Inflation Rate (HICP)")
+st.markdown("**HICP** = Harmonized Index of Consumer Prices. Monthly % change vs same month previous year. Comparable across all EU countries.")
+st.caption(last_updated_str(last_dates, 'inflation'))
+infl_years = time_buttons('infl_years')
 
-col_j1, col_j2, col_j3, col_j4, _ = st.columns([1,1,1,1,8])
-with col_j1:
-    if st.button("1Y", key="jvr_1y"): st.session_state['jvr_years'] = 1
-with col_j2:
-    if st.button("3Y", key="jvr_3y"): st.session_state['jvr_years'] = 3
-with col_j3:
-    if st.button("5Y", key="jvr_5y"): st.session_state['jvr_years'] = 5
-with col_j4:
-    if st.button("All", key="jvr_all"): st.session_state['jvr_years'] = 999
+df_infl = df_master_filtered[df_master_filtered['inflation_rate'].notna()].copy()
+max_date_i = df_infl['date'].max() if not df_infl.empty else pd.Timestamp.now()
+df_infl_view = df_infl if infl_years == 999 else df_infl[df_infl['date'] >= max_date_i - pd.DateOffset(years=infl_years)].copy()
 
-jvr_years = st.session_state.get('jvr_years', 3)
-df_jvr = df_master_filtered[df_master_filtered['job_vacancy_rate'].notna()].copy()
-max_date_j = df_jvr['date'].max() if not df_jvr.empty else pd.Timestamp.now()
-df_jvr_view = df_jvr if jvr_years == 999 else df_jvr[df_jvr['date'] >= max_date_j - pd.DateOffset(years=jvr_years)].copy()
-
-fig_jvr = go.Figure()
-for country in sorted(df_jvr_view['country'].unique()):
-    df_c = df_jvr_view[df_jvr_view['country'] == country]
-    fig_jvr.add_trace(go.Scatter(
-        x=df_c['date'], y=df_c['job_vacancy_rate'],
-        name=COUNTRY_NAMES.get(country, country), mode='lines+markers',
-        marker=dict(size=4), line=dict(width=2),
+fig_infl = go.Figure()
+for country in sorted(df_infl_view['country'].unique()):
+    df_c = df_infl_view[df_infl_view['country'] == country]
+    fig_infl.add_trace(go.Scatter(
+        x=df_c['date'], y=df_c['inflation_rate'],
+        name=COUNTRY_NAMES.get(country, country), mode='lines', line=dict(width=2),
         hovertemplate=f'<b>{COUNTRY_NAMES.get(country, country)}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}%<extra></extra>'
     ))
-fig_jvr.update_layout(
+fig_infl.add_hline(y=2, line_dash="dot", line_color="#aaa", line_width=1,
+                   annotation_text="ECB target 2%", annotation_position="bottom right")
+fig_infl.update_layout(
     height=450, hovermode='x unified', plot_bgcolor='white', paper_bgcolor='white',
     legend=dict(orientation='v', x=1.02, y=1), margin=dict(r=120),
     xaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
     yaxis=dict(showgrid=True, gridcolor='#f0f0f0', ticksuffix='%'),
 )
-st.plotly_chart(fig_jvr, use_container_width=True)
+st.plotly_chart(fig_infl, use_container_width=True)
 
 st.divider()
 
-# ── LABOR COST INDEX ────────────────────────────────────
-st.subheader("💰 Labor Cost Index")
-st.markdown("**Labor Cost Index (LCI)** = tracks how much it costs employers to hire one hour of work (wages + social contributions + benefits). Base year = 100. A value of 120 means labor costs are 20% higher than in the base year. Rapidly rising LCI signals increasing pressure on business costs.")
-st.caption(last_updated_str(last_dates, 'wages'))
+# ── GDP GROWTH ──────────────────────────────────────────
+st.subheader("📊 GDP Growth (Quarterly)")
+st.markdown("**GDP Growth** = % change in real GDP vs previous quarter. Seasonally adjusted. Positive = economy expanding, negative = contracting.")
+st.caption(last_updated_str(last_dates, 'gdp_growth'))
+gdp_years = time_buttons('gdp_years')
 
-col_w1, col_w2, col_w3, col_w4, _ = st.columns([1,1,1,1,8])
-with col_w1:
-    if st.button("1Y", key="wage_1y"): st.session_state['wage_years'] = 1
-with col_w2:
-    if st.button("3Y", key="wage_3y"): st.session_state['wage_years'] = 3
-with col_w3:
-    if st.button("5Y", key="wage_5y"): st.session_state['wage_years'] = 5
-with col_w4:
-    if st.button("All", key="wage_all"): st.session_state['wage_years'] = 999
+df_gdp = df_master_filtered[df_master_filtered['gdp_growth'].notna()].copy()
+max_date_g = df_gdp['date'].max() if not df_gdp.empty else pd.Timestamp.now()
+df_gdp_view = df_gdp if gdp_years == 999 else df_gdp[df_gdp['date'] >= max_date_g - pd.DateOffset(years=gdp_years)].copy()
+df_gdp_view = df_gdp_view.drop_duplicates(subset=['country', 'date'])
 
-wage_years = st.session_state.get('wage_years', 3)
-df_wage = df_master_filtered[df_master_filtered['labor_cost_index'].notna()].copy()
-max_date_w = df_wage['date'].max() if not df_wage.empty else pd.Timestamp.now()
-df_wage_view = df_wage if wage_years == 999 else df_wage[df_wage['date'] >= max_date_w - pd.DateOffset(years=wage_years)].copy()
-
-fig_wage = go.Figure()
-for country in sorted(df_wage_view['country'].unique()):
-    df_c = df_wage_view[df_wage_view['country'] == country]
-    fig_wage.add_trace(go.Scatter(
-        x=df_c['date'], y=df_c['labor_cost_index'],
+fig_gdp = go.Figure()
+for country in sorted(df_gdp_view['country'].unique()):
+    df_c = df_gdp_view[df_gdp_view['country'] == country]
+    fig_gdp.add_trace(go.Scatter(
+        x=df_c['date'], y=df_c['gdp_growth'],
         name=COUNTRY_NAMES.get(country, country), mode='lines+markers',
         marker=dict(size=4), line=dict(width=2),
-        hovertemplate=f'<b>{COUNTRY_NAMES.get(country, country)}</b><br>%{{x|%b %Y}}<br>Index: %{{y:.1f}}<extra></extra>'
+        hovertemplate=f'<b>{COUNTRY_NAMES.get(country, country)}</b><br>%{{x|%b %Y}}<br>%{{y:.1f}}%<extra></extra>'
     ))
-fig_wage.update_layout(
+fig_gdp.add_hline(y=0, line_color="#ccc", line_width=1)
+fig_gdp.update_layout(
     height=450, hovermode='x unified', plot_bgcolor='white', paper_bgcolor='white',
     legend=dict(orientation='v', x=1.02, y=1), margin=dict(r=120),
     xaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
-    yaxis=dict(showgrid=True, gridcolor='#f0f0f0', title='Index (base=100)'),
+    yaxis=dict(showgrid=True, gridcolor='#f0f0f0', ticksuffix='%'),
 )
-st.plotly_chart(fig_wage, use_container_width=True)
+st.plotly_chart(fig_gdp, use_container_width=True)
+
+st.divider()
+
+# ── NET WAGES PPS ───────────────────────────────────────
+st.subheader("💰 Net Wages in PPS (Purchasing Power Standards)")
+st.markdown("**Net Wages in PPS** = annual take-home pay of a single worker at average wage, expressed in Purchasing Power Standards. PPS removes price level differences between countries, making wages truly comparable. Higher PPS = higher real purchasing power.")
+st.caption(last_updated_str(last_dates, 'net_wages_pps'))
+
+df_wages = df_master_filtered[df_master_filtered['net_wage_pps'].notna()].copy()
+df_wages_latest = df_wages.groupby('country').last().reset_index()
+df_wages_latest['country_name'] = df_wages_latest['country'].map(COUNTRY_NAMES)
+df_wages_latest = df_wages_latest.sort_values('net_wage_pps')
+
+fig_wages_bar = px.bar(
+    df_wages_latest, x='country_name', y='net_wage_pps',
+    color='net_wage_pps', color_continuous_scale='Blues',
+    labels={'net_wage_pps': 'Net Wage (PPS)', 'country_name': 'Country'},
+    text='net_wage_pps'
+)
+fig_wages_bar.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+fig_wages_bar.update_layout(
+    height=400, plot_bgcolor='white', paper_bgcolor='white',
+    showlegend=False, yaxis=dict(title='Annual Net Wage (PPS)')
+)
+st.plotly_chart(fig_wages_bar, use_container_width=True)
+
+# Wage trend over time
+wage_years = time_buttons('wage_years')
+df_wages_view = df_wages if wage_years == 999 else df_wages[df_wages['date'] >= df_wages['date'].max() - pd.DateOffset(years=wage_years)].copy()
+
+fig_wages = go.Figure()
+for country in sorted(df_wages_view['country'].unique()):
+    df_c = df_wages_view[df_wages_view['country'] == country]
+    fig_wages.add_trace(go.Scatter(
+        x=df_c['date'], y=df_c['net_wage_pps'],
+        name=COUNTRY_NAMES.get(country, country), mode='lines+markers',
+        marker=dict(size=6), line=dict(width=2),
+        hovertemplate=f'<b>{COUNTRY_NAMES.get(country, country)}</b><br>%{{x|%Y}}<br>%{{y:,.0f}} PPS<extra></extra>'
+    ))
+fig_wages.update_layout(
+    height=450, hovermode='x unified', plot_bgcolor='white', paper_bgcolor='white',
+    legend=dict(orientation='v', x=1.02, y=1), margin=dict(r=120),
+    xaxis=dict(showgrid=True, gridcolor='#f0f0f0'),
+    yaxis=dict(showgrid=True, gridcolor='#f0f0f0', title='Annual Net Wage (PPS)'),
+)
+st.plotly_chart(fig_wages, use_container_width=True)
 
 st.divider()
 
 # ── FORECAST ────────────────────────────────────────────
 st.subheader("🔮 Unemployment Rate Forecast — Next 12 Months")
+st.markdown("*Forecast generated using the Prophet time series model, trained on historical unemployment data.*")
 st.caption(last_updated_str(last_dates, 'unemployment'))
 
 selected_country = st.selectbox(
@@ -394,18 +392,8 @@ selected_country = st.selectbox(
     options=sorted(df['country'].unique()),
     format_func=lambda x: COUNTRY_NAMES.get(x, x)
 )
+fc_years = time_buttons('fc_years')
 
-col_fc1, col_fc2, col_fc3, col_fc4, _ = st.columns([1,1,1,1,8])
-with col_fc1:
-    if st.button("1Y", key="fc_1y"): st.session_state['fc_years'] = 1
-with col_fc2:
-    if st.button("3Y", key="fc_3y"): st.session_state['fc_years'] = 3
-with col_fc3:
-    if st.button("5Y", key="fc_5y"): st.session_state['fc_years'] = 5
-with col_fc4:
-    if st.button("All", key="fc_all"): st.session_state['fc_years'] = 999
-
-fc_years = st.session_state.get('fc_years', 3)
 df_hist = df[df['country'] == selected_country].copy()
 df_fc = df_forecast[df_forecast['country'] == selected_country].copy()
 last_date = df_hist['date'].max()
@@ -452,7 +440,6 @@ st.divider()
 
 # ── MAPA ────────────────────────────────────────────────
 st.subheader("🗺️ CEE Region Map — Current Unemployment")
-
 df_map = df_latest.copy()
 df_map['iso_alpha'] = df_map['country'].map(ISO_MAP)
 
@@ -477,32 +464,29 @@ st.plotly_chart(fig_map, use_container_width=True)
 
 st.divider()
 
-# ── SCORECARD ───────────────────────────────────────────
-st.subheader("📊 CEE Comparative Scorecard")
-st.markdown("Overview of all countries and key metrics at a glance")
+# ── SCORECARD TABLE ─────────────────────────────────────
+st.subheader("📊 CEE Economic Snapshot")
+st.markdown("Latest available data for all countries across key indicators.")
 
-scorecard_pivot = df_scorecard.set_index('country_name')[
-    ['current_rate', 'rate_prev_year', 'yoy_change']
-].T
-scorecard_pivot.index = ['Current Rate (%)', 'Rate 1Y Ago (%)', 'YoY Change (pp)']
-
-fig_heat = px.imshow(
-    scorecard_pivot, color_continuous_scale='RdYlGn_r',
-    aspect='auto', title='CEE Labor Market Scorecard', text_auto='.1f'
-)
-fig_heat.update_layout(height=300)
-st.plotly_chart(fig_heat, use_container_width=True)
+df_snap = df_master.copy()
+df_snap_latest = df_snap.groupby('country').last().reset_index()
+df_snap_latest['country_name'] = df_snap_latest['country'].map(COUNTRY_NAMES)
+df_snap_latest = df_snap_latest[df_snap_latest['country'].isin(countries)]
+df_snap_latest = df_snap_latest.sort_values('unemployment_rate')
 
 st.dataframe(
-    df_scorecard[['country_name', 'current_rate', 'rate_prev_year', 'yoy_change']]
+    df_snap_latest[['country_name', 'unemployment_rate', 'youth_unemployment_rate',
+                    'inflation_rate', 'gdp_growth', 'net_wage_pps']]
     .rename(columns={
         'country_name': 'Country',
-        'current_rate': 'Current Rate (%)',
-        'rate_prev_year': '1Y Ago (%)',
-        'yoy_change': 'YoY Change (pp)'
-    })
-    .sort_values('Current Rate (%)'),
-    use_container_width=True, hide_index=True
+        'unemployment_rate': 'Unemployment (%)',
+        'youth_unemployment_rate': 'Youth Unempl. (%)',
+        'inflation_rate': 'Inflation (%)',
+        'gdp_growth': 'GDP Growth (%)',
+        'net_wage_pps': 'Net Wage (PPS)'
+    }),
+    use_container_width=True,
+    hide_index=True
 )
 
 st.divider()
